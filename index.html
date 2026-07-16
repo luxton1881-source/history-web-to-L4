@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <base target="_top">
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Звіт TO L4</title>
+    
+    <!-- Подключение Telegram Web App SDK -->
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
+    
+    <!-- Подключение библиотеки распознавания штрих-кодов -->
+    <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+    
+    <!-- Подключение библиотеки обрезки изображений (Cropper.js) -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.css" rel="stylesheet">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/cropperjs/1.5.13/cropper.min.js"></script>
+    
+    <!-- Внешние стили формы -->
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+    <!-- Шапка с информацией о мастере и текущем регионе -->
+    <div class="header-row">
+        <span id="badge-user" class="badge badge-user">👤 Загрузка...</span>
+        <span id="badge-region" class="badge badge-region">📍 Загрузка...</span>
+    </div>
+
+    <!-- Поле ввода ТКД / Свича и кнопки конструктора/очистки -->
+    <label class="field-label">📍 ТКД / Свич</label>
+    <div class="input-group">
+        <input type="text" id="tkd" placeholder="MDU_..." oninput="onTkdInputChange(this)">
+        <button class="icon-btn" onclick="openConstructor()" title="Конструктор ТКД">🧩</button>
+        <button class="icon-btn" onclick="clearTkdInput()" title="Очистить поле">📋</button>
+    </div>
+    <div id="address-label" style="font-size:15px; color:#2481cc; font-weight:bold; margin-top:5px; padding-left:5px;"></div>
+
+    <!-- Раздел видов работ -->
+    <label class="field-label">🛠 Выполнил: <span id="works-text" style="font-weight:normal; color:#666; margin-left:5px; font-size: 18px;"></span></label>
+    <div id="works-container" class="works-grid"></div>
+
+    <!-- Текстовый комментарий -->
+    <label class="field-label">💬 Комментарий</label>
+    <textarea id="comment" rows="2" placeholder="Дополнительная информация..."></textarea>
+
+    <!-- Ввод серийных номеров демонтированного оборудования -->
+    <label class="field-label">📤 СН Демонтаж</label>
+    <div class="input-group">
+        <input type="text" id="sn_dem" placeholder="Скан штрих-кода или ручной ввод">
+        <button class="icon-btn" onclick="startScanner('sn_dem')" title="Сканировать камерой">📷</button>
+    </div>
+
+    <!-- Ввод серийных номеров монтируемого оборудования -->
+    <label class="field-label">📥 СН Монтаж</label>
+    <div class="input-group">
+        <input type="text" id="sn_mont" placeholder="Скан штрих-кода или ручной ввод">
+        <button class="icon-btn" onclick="openWarehouse()" title="Выбрать со склада">📦</button>
+        <button class="icon-btn" onclick="startScanner('sn_mont')" title="Сканировать камерой">📷</button>
+    </div>
+
+    <!-- Главная кнопка отправки отчета -->
+    <button class="main-button" id="send-btn" onclick="sendData()" disabled>Загрузка данных...</button>
+
+    <!-- ==========================================================================
+         МОДАЛЬНЫЕ ОКНА
+         ========================================================================== -->
+
+    <!-- Модальное окно выбора АВР (Детализированные работы) -->
+    <div id="modal-avr" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">Выбор АВР работ</div>
+            <div class="modal-body" id="avr-list-container"></div>
+            <div class="modal-footer">
+                <button class="btn-modal btn-cancel" onclick="document.getElementById('modal-avr').style.display='none'">Отмена</button>
+                <button class="btn-modal btn-ok" onclick="saveAvrSelection()">Готово</button>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Модальное окно Конструктора MDU / ТКД -->
+    <div id="modal-constructor" class="modal">
+        <div class="modal-content">
+            <div class="modal-header" id="constr-preview" style="font-family: monospace; font-size: 20px;">MDU_...</div>
+            <div class="modal-body">
+                <div class="constr-row">
+                    <span class="constr-label">Код города:</span>
+                    <select id="constr-city" onchange="updateConstrPreview()"></select>
+                </div>
+                <div class="constr-row">
+                    <span class="constr-label">Номер МДЮ:</span>
+                    <input type="number" id="constr-mdu" placeholder="Например: 15" oninput="updateConstrPreview()">
+                </div>
+                <div class="constr-row">
+                    <span class="constr-label">Номер ТКД (4-5 цифр):</span>
+                    <input type="number" id="constr-tkd-num" placeholder="Например: 1084" oninput="updateConstrPreview()">
+                </div>
+                <div class="constr-row">
+                    <span class="constr-label">Номер свича (опционально):</span>
+                    <input type="number" id="constr-sw-num" placeholder="Например: 1" oninput="updateConstrPreview()">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-modal btn-clear" onclick="clearConstructor()">Очистить</button>
+                <button class="btn-modal btn-cancel" onclick="closeConstructor()">Отмена</button>
+                <button class="btn-modal btn-ok" onclick="saveConstructor()">Записать</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модальное окно выбора оборудования со склада мастера -->
+    <div id="modal-stock" class="modal">
+        <div class="modal-content">
+            <div class="modal-header" style="display:flex; justify-content:space-between; align-items: center;">
+                <span id="stock-title">Склад</span>
+                <span id="stock-count" style="background:rgba(255,255,255,0.2); padding:2px 8px; border-radius:10px; font-size:14px;">0</span>
+            </div>
+            <div style="padding: 10px; background: #f9f9f9; border-bottom: 1px solid #ddd;">
+                <input type="text" id="stock-search" placeholder="🔍 Поиск по SN..." oninput="renderStockTable()" style="padding: 8px;">
+            </div>
+            <div class="modal-body">
+                <table id="stock-table">
+                    <thead>
+                        <tr>
+                            <th style="width: 35%">
+                                <select id="filter-code" class="header-select" onchange="renderStockTable()">
+                                    <option value="">Код</option>
+                                </select>
+                            </th>
+                            <th style="width: 25%">
+                                <select id="filter-type" class="header-select" onchange="renderStockTable()">
+                                    <option value="">Тип</option>
+                                </select>
+                            </th>
+                            <th style="width: 30%">SN</th>
+                            <th class="check-cell">
+                                <select id="filter-check" class="header-select" onchange="renderStockTable()" style="text-align:center;">
+                                    <option value="">✔</option>
+                                    <option value="1">Да</option>
+                                    <option value="0">Нет</option>
+                                </select>
+                            </th>
+                        </tr>
+                    </thead>
+                    <tbody id="stock-tbody"></tbody>
+                </table>
+            </div>
+            <div class="modal-footer">
+                <button class="btn-modal btn-cancel" onclick="document.getElementById('modal-stock').style.display='none'">Закрыть</button>
+                <button class="btn-modal btn-ok" onclick="confirmStock()">Добавить</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модальное окно встроенной камеры для сканирования штрих-кодов -->
+    <div id="modal-scan" class="modal" style="justify-content: center; align-items: center;">
+        <div style="width: 100%; max-width: 350px; display: flex; flex-direction: column; align-items: center;">
+            <div id="reader" style="width:100%; border-radius:12px; overflow:hidden;"></div>
+            <button class="btn-modal btn-cancel" style="margin-top:20px; width: 150px;" onclick="stopScanner()">Закрыть</button>
+            <button class="btn-modal" style="margin-top:10px; width: 150px; background-color: #ff9800; color: white;" onclick="triggerFileScan()">📂 Скан с фото</button>
+        </div>
+    </div>
+    
+    <!-- Модальное окно Кроппера (кадрирования штрих-кода) -->
+    <div id="modal-crop" class="modal">
+        <div style="width: 100%; max-width: 400px; background: white; padding: 15px; border-radius: 15px; display: flex; flex-direction: column;">
+            <div style="font-weight: bold; margin-bottom: 10px; text-align: center;">Выделите штрих-код пальцами</div>
+            <div class="img-container">
+                <img id="image-to-crop" src="">
+            </div>
+            <div style="display: flex; gap: 10px; margin-top: 15px;">
+                <button class="btn-modal btn-cancel" onclick="closeCropper()">Отмена</button>
+                <button class="btn-modal" style="background: #2481cc; color: white;" onclick="scanCroppedImage()">🔍 СКАН</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Скрытый инпут выбора файла для сканирования из галереи/файлов -->
+    <input type="file" id="scan-file-input" accept="image/*" style="display:none" onchange="handleFileScan(this)">
+
+    <!-- Скрипт логики формы -->
+    <script src="app.js" defer></script>
+</body>
+</html>

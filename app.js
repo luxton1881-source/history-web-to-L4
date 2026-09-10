@@ -567,36 +567,8 @@ function sendData() {
         target_region: finalRegion
     };
 
-    // Определение платформы Android для мгновенной отправки
-    const isAndroid = /android/i.test(navigator.userAgent);
-
-    if (isAndroid) {
-        const jsonData = JSON.stringify(data);
-        // Передача данных боту по протоколу sendData
-        tg.sendData(jsonData);
-        tg.close();
-        return;
-    }
-
-    // Для iOS / ПК: отправляем GET-запрос в GAS буферную таблицу
-    const requestUrl = `${GAS_API_URL}?action=saveToBuffer&jsonData=${encodeURIComponent(JSON.stringify(data))}`;
-    
-    fetch(requestUrl)
-        .then(response => response.json())
-        .then(uuid => {
-            if (uuid.error) {
-                throw new Error(uuid.error);
-            }
-            // Перенаправление мастера в чат с ботом для обработки команды старта
-            const botUrl = `https://t.me/History_TO_L4_bot?start=REPORT_ID_${uuid}`;
-            window.open(botUrl, '_blank');
-            tg.close();
-        })
-        .catch(err => {
-            console.error("Ошибка при сохранении в буфер:", err);
-            alert("Произошла ошибка сохранения: " + err.message);
-            btn.disabled = false;
-            btn.innerText = "ОТПРАВИТЬ ОТЧЕТ";
-            isSubmitting = false;
-        });
+    // Прямая передача данных боту для всех платформ (Android, iOS, ПК)
+    const jsonData = JSON.stringify(data);
+    tg.sendData(jsonData);
+    tg.close();
 }

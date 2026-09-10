@@ -5,8 +5,9 @@ const tg = window.Telegram.WebApp;
 tg.ready();
 tg.expand();
 
-// URL-адрес развернутого веб-приложения Google Apps Script
-const GAS_API_URL = "https://script.google.com/macros/s/AKfycbxv4SexHHe5bWX7bYFYX67Kqm0W_k62tTdYVx7xXyXGtqS668r7GaVyytw7SMkLxU4AfQ/exec";
+// Идентификаторы Google Таблиц для прямого чтения через GViz API
+const SPREADSHEET_ID = "1PfWdhYCPCM4zbhV76qk5wcXIfQZzU7qSRwLlxkN7Jx0";
+const CRAMER_SPREADSHEET_ID = "1esH5e9nWVuE0ZtKc3TvKxSGGKweBoNEeetnREgoekyg";
 
 // Получение параметров uid и region из строки запроса текущего URL
 const urlParams = new URLSearchParams(window.location.search);
@@ -25,6 +26,14 @@ let currentScanId = null;
 let cropper = null;
 let isSubmitting = false;
 
+// Вспомогательная функция парсинга ответа Google GViz API
+function parseGvizResponse(text) {
+    const start = text.indexOf('{');
+    const end = text.lastIndexOf('}');
+    if (start === -1 || end === -1) throw new Error("Неверный формат ответа GViz");
+    return JSON.parse(text.substring(start, end + 1));
+}
+
 // Запуск при загрузке страницы
 window.onload = function() {
     // 1. Установка региона в шапке
@@ -41,62 +50,84 @@ window.onload = function() {
     sendBtn.disabled = true;
     sendBtn.innerText = "ЗАГРУЗКА ДАННЫХ...";
 
-    // 3. Асинхронная загрузка справочников работ и городов
-    Promise.all([
-        fetch(`${GAS_API_URL}?action=getStandardJobs`).then(r => r.json()),
-        fetch(`${GAS_API_URL}?action=getDetailedJobs`).then(r => r.json()),
-        fetch(`${GAS_API_URL}?action=getCityCodes`).then(r => r.json())
-    ]).then(([stdJobs, avrJobs, cityCodes]) => {
-        JOBS_STD = stdJobs;
-        JOBS_AVR = avrJobs;
-        cityCodesData = cityCodes;
+    // 3. Прямая загрузка справочников и пользователя из листа «Данные»
+    const gvizUrl = `https://docs.google.com/spreadsheets/d/${SPREADSHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent('Данные')}`;
 
-        // Отрисовка сетки работ на форме
-        renderMainGrid();
-        
-        // Разблокировка кнопки отправки
-        sendBtn.disabled = false;
-        sendBtn.innerText = "ОТПРАВИТЬ ОТЧЕТ";
-    }).catch(err => {
-        console.error("Ошибка загрузки справочников:", err);
-        sendBtn.innerText = "ОШИБКА ЗАГРУЗКИ";
-        alert("Не удалось загрузить списки работ из Google Таблицы. Проверьте интернет-соединение.");
-    });
+    fetch(gvizUrl)
+        .then(r => r.text())
+        .then(text => {
+            const data = parseGvizResponse(text);
+            const rows = (data.table && data.table.rows) || [];
 
-    // 4. Загрузка склада мастера по ID (если есть) или по ID Telegram
-    if (SERVER_UID && SERVER_UID !== "undefined") {
-        loadUserStock(SERVER_UID);
-    } else if (tg.initDataUnsafe && tg.initDataUnsafe.user) {
-        loadUserStock(tg.initDataUnsafe.user.id);
-    } else {
-        document.getElementById('badge-user').innerText = "👤 Неизвестный";
-    }
-};
+            let foundMasterFio = "";
+            let stdSet = new Set();
+            let avrSet = new Set();
+            let cityCodesList = [];
 
-// Функция загрузки склада мастера
-function loadUserStock(uid) {
-    fetch(`${GAS_API_URL}?action=getUserStock&uid=${uid}`)
-        .then(r => r.json())
-        .then(data => onUserLoaded(data))
+            // Обрабатываем каждую строку листа «Данные»
+            for (let i = 0; i < rows.length; i++) {
+                const c = rows[i].c;
+                if (!c) continue;
+
+                // Поиск мастера: колонка C (индекс 2) - ФИО, колонка D (индекс 3) - ID ТГ
+                if (c[3] && c[3].v !== null && String(c[3].v).trim() === String(SERVER_UID).trim()) {
+                    if (c[2] && c[2].v) {
+                        foundMasterFio = String(c[2].v).trim();
+                    }
+                }
+
+                // Стандартные работы: колонка I (индекс 8)
+                if (c[8] && c[8].v !== null) {
+                    let job = String(c[8].v).trim();
+                    if (job && job !== "Виды работ") stdSet.add(job);
+                }
+
+                // АВР работы: колонка J (индекс 9)
+                if (c[9] && c[9].v !== null) {
+                    let avr = String(c[9].v).trim();
+                    if (avr && avr !== "АВР") avrSet.add(avr);
+                }
+
+                // Коды городов: колонка M (индекс 12) - Область, колонка N (индекс 13) - Код города
+                if (c[12] && c[13] && c[12].v !== null && c[13].v !== null) {
+                    let reg = String(c[12].v).trim();
+                    let code = String(c[13].v).trim();
+                    if (reg && code && code !== "Код города") {
+                        cityCodesList.push({ region: reg, code: code });
+                    }
+                }
+            }
+
+            // Установка фамилии мастера
+            const userBadge = document.getElementById('badge-user');
+            if (foundMasterFio) {
+                let surname = foundMasterFio.split(" ")[0];
+                userBadge.innerText = "👤 " + surname;
+                document.getElementById('stock-title').innerText = "Склад: " + surname;
+            } else if (tg.initDataUnsafe && tg.initDataUnsafe.user) {
+                userBadge.innerText = "👤 " + (tg.initDataUnsafe.user.first_name || "Мастер");
+            } else {
+                userBadge.innerText = "👤 Мастер";
+            }
+
+            // Заполнение справочников
+            JOBS_STD = Array.from(stdSet);
+            JOBS_AVR = Array.from(avrSet);
+            cityCodesData = cityCodesList;
+
+            // Отрисовка сетки работ на форме
+            renderMainGrid();
+
+            // Разблокировка кнопки отправки
+            sendBtn.disabled = false;
+            sendBtn.innerText = "ОТПРАВИТЬ ОТЧЕТ";
+        })
         .catch(err => {
-            console.error("Ошибка при загрузке склада мастера:", err);
-            document.getElementById('badge-user').innerText = "👤 Ошибка склада";
+            console.error("Ошибка загрузки данных из Google Таблицы:", err);
+            sendBtn.innerText = "ОШИБКА ЗАГРУЗКИ";
+            alert("Не удалось загрузить данные из Google Таблицы. Проверьте интернет-соединение.");
         });
-}
-
-// Вызывается, когда данные пользователя успешно получены
-function onUserLoaded(res) {
-    if (res.error) {
-        document.getElementById('badge-user').innerText = "👤 Ошибка";
-        console.error(res.error);
-    } else {
-        document.getElementById('badge-user').innerText = "👤 " + res.masterName;
-        document.getElementById('stock-title').innerText = "Склад: " + res.masterName;
-        stockItems = (res.items || []).map(i => ({ ...i, selected: false }));
-        document.getElementById('stock-count').innerText = stockItems.length;
-        renderStockTable();
-    }
-}
+};
 
 // ==========================================================================
 // 2. ЛОГИКА ТКД И АВТОПОДСТАНОВКИ АДРЕСА
@@ -130,21 +161,37 @@ function clearTkdInput() {
     document.getElementById('address-label').innerText = "";
 }
 
-// Поиск адреса ТКД по базе Крамера
+// Поиск адреса ТКД напрямую по базе Крамера через Google GViz API
 function searchAddress() {
     let v = document.getElementById('tkd').value.trim();
-    if (v.length > 3) {
-        document.getElementById('address-label').innerText = "🔄 Поиск адреса...";
-        fetch(`${GAS_API_URL}?action=getAddressByTkd&tkd=${encodeURIComponent(v)}`)
-            .then(r => r.json())
-            .then(address => {
-                document.getElementById('address-label').innerText = address || "Адрес не найден";
-            })
-            .catch(err => {
-                console.error("Ошибка при поиске адреса:", err);
-                document.getElementById('address-label').innerText = "Ошибка загрузки адреса";
-            });
-    }
+    if (v.length < 4) return;
+
+    // Извлекаем чистый базовый ТКД без суффикса свича (_1, _2)
+    let match = v.match(/^([A-Za-z0-9]{3}_[A-Za-z0-9]{3}\d{5}_\d{4,5})/);
+    let cleanTkd = match ? match[1].toUpperCase() : v.toUpperCase();
+
+    let label = document.getElementById('address-label');
+    label.innerText = "🔄 Поиск адреса...";
+
+    // Точечный SQL-запрос к листу «Крамер»: ищем в колонке Q и возвращаем колонку G
+    const query = encodeURIComponent(`SELECT G WHERE Q = '${cleanTkd}' LIMIT 1`);
+    const cramerUrl = `https://docs.google.com/spreadsheets/d/${CRAMER_SPREADSHEET_ID}/gviz/tq?tqx=out:json&sheet=${encodeURIComponent('Крамер')}&tq=${query}`;
+
+    fetch(cramerUrl)
+        .then(r => r.text())
+        .then(text => {
+            const data = parseGvizResponse(text);
+            const rows = (data.table && data.table.rows) || [];
+            if (rows.length > 0 && rows[0].c && rows[0].c[0] && rows[0].c[0].v) {
+                label.innerText = "🏠 " + rows[0].c[0].v;
+            } else {
+                label.innerText = "Адрес не найден";
+            }
+        })
+        .catch(err => {
+            console.error("Ошибка при поиске адреса:", err);
+            label.innerText = "Ошибка загрузки адреса";
+        });
 }
 
 // ==========================================================================
@@ -155,9 +202,16 @@ function openConstructor() {
     let citySelect = document.getElementById('constr-city');
     citySelect.innerHTML = '<option value="">Выберите код...</option>';
     
-    // Фильтруем коды городов только для текущего региона (SERVER_REGION)
-    let filtered = cityCodesData.filter(row => row.region === SERVER_REGION);
-    filtered.forEach(item => {
+    // Регистронезависимая фильтрация кодов городов для текущего региона (SERVER_REGION)
+    let currentReg = (SERVER_REGION || "").trim().toLowerCase();
+    let filtered = cityCodesData.filter(row => {
+        let r = (row.region || "").trim().toLowerCase();
+        return r === currentReg || r.includes(currentReg) || currentReg.includes(r);
+    });
+
+    // Если по фильтру ничего не найдено, показываем все доступные коды городов
+    let listToShow = filtered.length > 0 ? filtered : cityCodesData;
+    listToShow.forEach(item => {
         citySelect.innerHTML += `<option value="${item.code}">${item.code} (${item.region})</option>`;
     });
     
